@@ -1,0 +1,25 @@
+{
+  "required": true,
+  "package": "hb.common.mc.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "AbstractRecipeBookScreenAccessor",
+    "BlockItemMixin",
+    "ClientPacketListenerMixin",
+    "CreativeModeInventoryScreenAccessor",
+    "KeyMappingAccessor",
+    "KeyboardHandlerMixin",
+    "LocalPlayerMixin",
+    "MouseHandlerAccessor",
+    "MouseHandlerMixin",
+    "MultiPlayerGameModeAccessor",
+    "MultiPlayerGameModeMixin",
+    "RecipeBookComponentAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

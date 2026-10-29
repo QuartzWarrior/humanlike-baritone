@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.jar binary
+*.png binary
+*.hbr binary
+*.zst binary
+
+# Generated from proto/hb/v1/hb.proto by `./gradlew :mod:common:syncPythonProto`
+pipeline/src/hbpipe/proto/hb/v1/hb_pb2.py linguist-generated
+pipeline/src/hbpipe/proto/hb/v1/hb_pb2.pyi linguist-generated

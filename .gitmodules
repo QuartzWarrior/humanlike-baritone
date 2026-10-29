@@ -1,0 +1,4 @@
+[submodule "baritone-fork"]
+	path = baritone-fork
+	url = https://github.com/QuartzWarrior/humanLikeBaritone.git
+	branch = 26.2

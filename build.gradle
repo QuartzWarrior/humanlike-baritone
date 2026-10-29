@@ -1,0 +1,110 @@
+plugins {
+	id 'base'
+	id 'jvm-toolchains'
+	id 'net.fabricmc.fabric-loom' version "${loom_version}" apply false
+	id 'com.google.protobuf' version "${protobuf_plugin_version}" apply false
+}
+
+allprojects {
+	group = project.maven_group
+	version = project.mod_version
+}
+
+subprojects { Project p ->
+	p.plugins.withId('java') {
+		p.java {
+			toolchain.languageVersion = JavaLanguageVersion.of(25)
+			withSourcesJar()
+		}
+		p.tasks.withType(JavaCompile).configureEach {
+			options.release = 25
+			options.encoding = 'UTF-8'
+		}
+		p.tasks.withType(Test).configureEach {
+			useJUnitPlatform()
+		}
+
+		// fabric.mod.json takes its version and dependency ranges from gradle.properties,
+		// so a Minecraft or loader bump only touches that file.
+		// (Hooked on 'java' because a plugins.withId('net.fabricmc.fabric-loom') listener here
+		// makes Loom 1.19 miss its own non-remap marker and ask for mappings.)
+		p.tasks.named('processResources', ProcessResources) {
+			def props = [
+				version          : p.version,
+				minecraft_version: p.minecraft_version,
+				loader_version   : p.loader_version,
+			]
+			inputs.properties props
+			filesMatching('fabric.mod.json') { expand props }
+		}
+	}
+}
+
+// ------------------------------------------------------------------------------------------------
+// Baritone fork bridge
+//
+// baritone-fork/ is cabaletta's Gradle 8 + Unimined build, so it can't join this Gradle 9 + Loom
+// build. We run its wrapper as an external process and publish two artifacts to the mods:
+//   baritoneRuntime  the full Fabric jar, for dev runs and client game tests
+//   baritoneApi      the same jar stripped to baritone/api/**, the only thing mods compile against
+// ------------------------------------------------------------------------------------------------
+
+def baritoneDir = file('baritone-fork')
+def baritoneLibs = file('baritone-fork/fabric/build/libs')
+def baritoneRuntimeFile = layout.buildDirectory.file('baritone/runtime/baritone-fabric.jar')
+def isWindows = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+def baritoneJavaHome = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+	.map { it.metadata.installationPath.asFile.absolutePath }
+
+def buildBaritoneFork = tasks.register('buildBaritoneFork', Exec) {
+	group = 'hb'
+	description = 'Builds the Fabric jar of the Baritone fork with its own Gradle wrapper.'
+	workingDir baritoneDir
+	// Absolute path: Windows may be set to not search the current directory for executables.
+	commandLine((isWindows ? ['cmd', '/c', new File(baritoneDir, 'gradlew.bat').absolutePath] : [new File(baritoneDir, 'gradlew').absolutePath])
+		+ ['-Pavailable_loaders=fabric', ':fabric:remapJar', '--console=plain'])
+	inputs.files(fileTree(baritoneDir) {
+		include 'src/**', 'fabric/src/**', 'buildSrc/src/**'
+		include '*.gradle', 'fabric/build.gradle', 'buildSrc/build.gradle', 'gradle.properties'
+	}).withPathSensitivity(PathSensitivity.RELATIVE)
+	outputs.dir baritoneLibs
+	doFirst {
+		environment 'JAVA_HOME', baritoneJavaHome.get()
+		// The jar name embeds `git describe` of the fork, so clear jars from older commits.
+		baritoneLibs.deleteDir()
+	}
+}
+
+def baritoneFabricJar = tasks.register('baritoneFabricJar', Sync) {
+	group = 'hb'
+	description = 'Copies the Baritone fork jar to a stable path.'
+	from(buildBaritoneFork) {
+		include 'baritone-fabric-*.jar'
+		exclude '*-dev*.jar'
+		rename { 'baritone-fabric.jar' }
+	}
+	into baritoneRuntimeFile.map { it.asFile.parentFile }
+}
+
+def baritoneApiJar = tasks.register('baritoneApiJar', Jar) {
+	group = 'hb'
+	description = 'Strips the Baritone fork jar to baritone.api.* so mods can only compile against the API.'
+	dependsOn baritoneFabricJar
+	from(zipTree(baritoneRuntimeFile)) {
+		include 'baritone/api/**'
+	}
+	archiveFileName = 'baritone-api.jar'
+	destinationDirectory = layout.buildDirectory.dir('baritone/api')
+}
+
+configurations {
+	consumable('baritoneApi')
+	consumable('baritoneRuntime')
+}
+
+artifacts {
+	baritoneApi(baritoneApiJar)
+	baritoneRuntime(baritoneRuntimeFile) {
+		builtBy baritoneFabricJar
+	}
+}

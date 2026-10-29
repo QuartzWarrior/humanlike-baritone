@@ -1,0 +1,552 @@
+// Humanlike Baritone recording schema.
+//
+// This file is the single contract between the Java mods (hb-recorder, hb-executor) and the Python
+// pipeline (hbpipe). Java bindings are generated at build time. Python bindings come from the same
+// protoc and are committed under pipeline/src/hbpipe/proto; regenerate them with
+//   ./gradlew :mod:common:syncPythonProto
+//
+// Framing (.hbr): a sequence of Envelope messages, each prefixed with its byte length as a protobuf
+// varint32 (Java writeDelimitedTo). Chunk files (.hbr.zst) are that stream compressed with zstd.
+//
+// Compatibility: adding fields, messages or oneof cases is non-breaking. Renumbering, retyping or
+// changing the meaning of an existing field is breaking and requires a new SchemaVersion value with
+// SCHEMA_VERSION_CURRENT moved to it.
+syntax = "proto3";
+
+package hb.v1;
+
+option java_package = "hb.proto.v1";
+option java_multiple_files = true;
+option java_outer_classname = "HbProto";
+
+enum SchemaVersion {
+  option allow_alias = true;
+  SCHEMA_VERSION_UNSPECIFIED = 0;
+  SCHEMA_VERSION_1 = 1;
+  // Always aliases the newest version. Writers stamp it into Envelope.schema and SessionHeader.schema.
+  SCHEMA_VERSION_CURRENT = 1;
+}
+
+// =================================================================================================
+// Record envelope
+// =================================================================================================
+
+message Envelope {
+  uint32 schema = 1;     // SchemaVersion number
+  string segment_id = 2; // new id every time recording resumes after a pause
+  uint64 tick = 3;       // client tick index since session start
+  uint64 t_ns = 4;       // monotonic ns since session start (System.nanoTime based)
+  oneof body {
+    Tick tick_state = 10;
+    MouseMove mouse = 11;
+    Button button = 12;
+    Key key = 13;
+    Scroll scroll = 14;
+    GuiCursor cursor = 15;
+    SlotClick slot = 16;
+    GameEvent event = 17;
+    WorldCube cube = 18;
+    WorldDelta delta = 19;
+    StateChange state = 20;
+    SegmentFlag flag = 21;
+    Discard discard = 22;
+  }
+}
+
+// =================================================================================================
+// Shared types
+// =================================================================================================
+
+message Vec3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+
+message BlockPos {
+  sint32 x = 1;
+  sint32 y = 2;
+  sint32 z = 3;
+}
+
+enum Direction {
+  DIRECTION_UNSPECIFIED = 0;
+  DIRECTION_DOWN = 1;
+  DIRECTION_UP = 2;
+  DIRECTION_NORTH = 3;
+  DIRECTION_SOUTH = 4;
+  DIRECTION_WEST = 5;
+  DIRECTION_EAST = 6;
+}
+
+enum Hand {
+  HAND_UNSPECIFIED = 0;
+  HAND_MAIN = 1;
+  HAND_OFF = 2;
+}
+
+message Enchantment {
+  string id = 1; // e.g. "minecraft:efficiency"
+  int32 level = 2;
+}
+
+message ItemStack {
+  string id = 1; // e.g. "minecraft:iron_pickaxe"; empty for an empty stack
+  int32 count = 2;
+  int32 damage = 3;
+  int32 max_damage = 4; // 0 for items without durability
+  repeated Enchantment enchantments = 5;
+}
+
+// Which side of the loop produced a recording. The discriminator strips it before training.
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  SOURCE_HUMAN = 1; // hb-recorder
+  SOURCE_BOT = 2;   // hb-executor; never mixed into human training data
+}
+
+// =================================================================================================
+// Raw input, captured per frame
+// =================================================================================================
+
+// Mouse motion for one frame, captured where the game turns the player.
+message MouseMove {
+  double dx = 1;     // raw device counts before sensitivity scaling
+  double dy = 2;
+  float d_yaw = 3;   // resulting yaw change in degrees, after the game's sensitivity math
+  float d_pitch = 4;
+}
+
+message Button {
+  int32 button = 1; // GLFW mouse button (0 left, 1 right, 2 middle, ...)
+  bool down = 2;
+  int32 mods = 3;   // GLFW modifier bits
+  bool in_gui = 4;  // a screen was open
+}
+
+// Only bound keys and GUI keys, and never while a text field has focus.
+message Key {
+  int32 key = 1;       // GLFW key code
+  int32 scancode = 2;
+  bool down = 3;
+  string binding = 4;  // KeyMapping name if the key is bound, else empty
+  int32 mods = 5;
+  bool repeat = 6;     // GLFW_REPEAT; the recorder no longer writes OS key-repeat events
+}
+
+message Scroll {
+  double dx = 1;
+  double dy = 2;
+}
+
+// Cursor position in GUI-scaled coordinates, every frame while a container screen is open.
+message GuiCursor {
+  double x = 1;
+  double y = 2;
+}
+
+enum ClickType {
+  CLICK_TYPE_UNSPECIFIED = 0;
+  CLICK_TYPE_PICKUP = 1;
+  CLICK_TYPE_QUICK_MOVE = 2;  // shift-click
+  CLICK_TYPE_SWAP = 3;        // number key or offhand swap
+  CLICK_TYPE_CLONE = 4;
+  CLICK_TYPE_THROW = 5;
+  CLICK_TYPE_QUICK_CRAFT = 6; // drag-splitting
+  CLICK_TYPE_PICKUP_ALL = 7;  // double-click
+}
+
+message SlotClick {
+  int32 slot_id = 1;
+  int32 button = 2;
+  ClickType click_type = 3;
+  ItemStack slot_item = 4; // item in the slot before the click
+  ItemStack carried = 5;   // item on the cursor before the click
+  string menu = 6;         // menu type id, e.g. "minecraft:generic_9x3"
+  int32 container_id = 7;
+}
+
+// =================================================================================================
+// Game state, captured per client tick (20 Hz)
+// =================================================================================================
+
+// Bit masks for Tick.flags.
+enum TickFlag {
+  TICK_FLAG_NONE = 0;
+  TICK_FLAG_ON_GROUND = 1;
+  TICK_FLAG_SPRINTING = 2;
+  TICK_FLAG_CROUCHING = 4;
+  TICK_FLAG_SWIMMING = 8;
+  TICK_FLAG_GLIDING = 16;
+  TICK_FLAG_H_COLLISION = 32;
+  TICK_FLAG_V_COLLISION = 64;
+  TICK_FLAG_V_COLLISION_UP = 128; // head hit
+  TICK_FLAG_IN_WATER = 256;
+  TICK_FLAG_IN_LAVA = 512;
+  TICK_FLAG_ON_CLIMBABLE = 1024;
+  TICK_FLAG_PASSENGER = 2048;
+  TICK_FLAG_USING_ITEM = 4096;
+  TICK_FLAG_BLOCKING = 8192;
+  TICK_FLAG_EYES_IN_WATER = 16384;
+}
+
+message Tick {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  float vx = 4; // blocks per tick
+  float vy = 5;
+  float vz = 6;
+  float yaw = 7;
+  float pitch = 8;
+  uint32 flags = 9;       // OR of TickFlag
+  uint64 keys_down = 10;  // bit i set = SessionHeader.key_order[i] is down
+  int32 slot = 11;        // selected hotbar slot, 0-8
+  string held_item = 12;  // main-hand item id (the full stack is in main_hand)
+  HitResult hit = 13;     // crosshair target
+  float destroy_progress = 14; // 0-1, 0 when not breaking
+  float attack_cooldown = 15;  // 0-1, 1 = fully charged
+  float health = 16;
+  int32 food = 17;
+  float fps = 18;
+  repeated NearbyEntity entities = 19; // within 16 blocks
+  float saturation = 20;
+  int32 air = 21;
+  float fall_distance = 22;
+  repeated Effect effects = 23;
+  ItemStack main_hand = 24;
+  ItemStack off_hand = 25;
+  repeated ItemStack armor = 26; // feet, legs, chest, head
+  BlockPos breaking_pos = 27;    // block being broken; unset when not breaking
+  TickContext context = 28;
+}
+
+message HitResult {
+  enum Type {
+    MISS = 0;
+    BLOCK = 1;
+    ENTITY = 2;
+  }
+  Type type = 1;
+  BlockPos block_pos = 2;
+  Direction face = 3;
+  Vec3 location = 4; // exact hit vector
+  int32 entity_id = 5;
+  string entity_type = 6;
+  string block = 7;  // block id at block_pos
+}
+
+message NearbyEntity {
+  int32 id = 1;
+  string type = 2;
+  float dx = 3; // position relative to the player's feet
+  float dy = 4;
+  float dz = 5;
+  float vx = 6;
+  float vy = 7;
+  float vz = 8;
+  float health = 9; // 0 for non-living entities
+  float yaw = 10;
+}
+
+message Effect {
+  string id = 1;
+  int32 amplifier = 2;
+  int32 duration_ticks = 3;
+}
+
+message TickContext {
+  string dimension = 1;
+  string biome = 2;
+  int32 block_light = 3;
+  int32 sky_light = 4;
+  int64 day_time = 5;
+  string screen = 6; // current screen class; empty in game
+  int32 ping_ms = 7; // 0 in singleplayer
+}
+
+// =================================================================================================
+// Discrete game events
+// =================================================================================================
+
+message GameEvent {
+  oneof kind {
+    BlockBroken block_broken = 1;
+    BlockPlaced block_placed = 2;
+    ItemPickedUp item_picked_up = 3;
+    ItemDropped item_dropped = 4;
+    ResultTaken result_taken = 5;
+    DamageDealt damage_dealt = 6;
+    DamageTaken damage_taken = 7;
+    Death death = 8;
+    Respawn respawn = 9;
+    DimensionChange dimension_change = 10;
+    ScreenOpened screen_opened = 11;
+    ScreenClosed screen_closed = 12;
+    ChatSent chat_sent = 13;
+    DestroyStarted destroy_started = 14;
+    DestroyAborted destroy_aborted = 15;
+    PositionCorrected position_corrected = 16;
+    SoundHeard sound_heard = 17;
+    Interaction interaction = 18;
+  }
+}
+
+message BlockBroken {
+  BlockPos pos = 1;
+  string block = 2;
+  string tool = 3; // item id used; empty for bare hand
+  uint32 ticks_taken = 4;
+  Direction face = 5;
+}
+
+message BlockPlaced {
+  BlockPos pos = 1;          // where the new block is
+  Direction clicked_face = 2;
+  string block = 3;
+  BlockPos clicked_pos = 4;  // the block that was clicked
+  Hand hand = 5;
+  Vec3 hit = 6;              // exact click location
+}
+
+message ItemPickedUp {
+  ItemStack item = 1;
+}
+
+message ItemDropped {
+  ItemStack item = 1;
+  bool whole_stack = 2;
+}
+
+// Crafting, smelting, trading and other result-slot pickups.
+message ResultTaken {
+  enum Kind {
+    OTHER = 0;
+    CRAFT = 1;
+    SMELT = 2;
+    TRADE = 3;
+    SMITH = 4;
+    STONECUT = 5;
+    ENCHANT = 6;
+    ANVIL = 7;
+    BREW = 8;
+  }
+  Kind kind = 1;
+  ItemStack result = 2;
+  string menu = 3;
+  bool quick_move = 4; // shift-clicked out
+}
+
+message DamageDealt {
+  int32 entity_id = 1;
+  string entity_type = 2;
+  float amount = 3;          // best effort: client-observed health drop, 0 if unknown
+  bool critical = 4;
+  bool sprinting = 5;
+  float attack_cooldown = 6; // cooldown at the moment of the hit
+}
+
+message DamageTaken {
+  float amount = 1;
+  string source = 2; // damage type id
+  int32 attacker_id = 3;
+  string attacker_type = 4;
+}
+
+message Death {
+  string cause = 1; // damage type id
+}
+
+message Respawn {}
+
+message DimensionChange {
+  string from_dimension = 1;
+  string to_dimension = 2;
+}
+
+message ScreenOpened {
+  string screen = 1; // screen class
+  string menu = 2;   // menu type id for container screens
+  int32 gui_width = 3;  // GUI-scaled screen size; GuiCursor coordinates are relative to it
+  int32 gui_height = 4;
+}
+
+message ScreenClosed {
+  string screen = 1;
+}
+
+// A flag only. Chat and command text is never recorded.
+message ChatSent {
+  bool is_command = 1;
+}
+
+message DestroyStarted {
+  BlockPos pos = 1;
+  Direction face = 2;
+  string block = 3;
+  string tool = 4;
+}
+
+message DestroyAborted {
+  BlockPos pos = 1;
+  float progress = 2;
+}
+
+// Server position correction (teleport packet). Also marks the segment degraded.
+message PositionCorrected {
+  Vec3 before = 1;
+  Vec3 after = 2;
+}
+
+message SoundHeard {
+  string sound = 1;    // sound event id
+  string category = 2; // e.g. "hostile", "block"
+  float dx = 3;        // relative to the player's eyes
+  float dy = 4;
+  float dz = 5;
+  float volume = 6;
+}
+
+// Fabric interaction callbacks: AttackBlock, UseBlock, UseItem, AttackEntity, UseEntity.
+message Interaction {
+  enum Kind {
+    UNKNOWN = 0;
+    ATTACK_BLOCK = 1;
+    USE_BLOCK = 2;
+    USE_ITEM = 3;
+    ATTACK_ENTITY = 4;
+    USE_ENTITY = 5;
+  }
+  Kind kind = 1;
+  Hand hand = 2;
+  BlockPos pos = 3;
+  Direction face = 4;
+  int32 entity_id = 5;
+  string entity_type = 6;
+  string item = 7;
+  string block = 8;
+}
+
+// =================================================================================================
+// Local world (9x9x9 cube around the player)
+// =================================================================================================
+
+// Full snapshot, sent at segment start and whenever a resync is cheaper than a delta.
+message WorldCube {
+  BlockPos origin = 1;         // minimum corner
+  uint32 size = 2;             // edge length; 9 in v1
+  repeated string palette = 3; // block state strings, e.g. "minecraft:oak_stairs[facing=north,half=bottom]"
+  // Palette index per block, x fastest, then z, then y:
+  //   indices[(dy * size + dz) * size + dx]
+  repeated uint32 indices = 4;
+}
+
+// Changes since the previous cube or delta in the same segment. When the player moves, origin
+// shifts and blocks entering the cube are listed as changes too.
+message WorldDelta {
+  BlockPos origin = 1;
+  repeated BlockChange changes = 2;
+}
+
+message BlockChange {
+  BlockPos pos = 1; // absolute
+  string state = 2; // block state string
+}
+
+// =================================================================================================
+// Recorder state
+// =================================================================================================
+
+message StateChange {
+  enum S {
+    RECORDING = 0;
+    PAUSED = 1;
+    STOPPED = 2;
+  }
+  S state = 1;
+  string reason = 2; // human-readable detail
+  PauseReason reason_code = 3;
+}
+
+enum PauseReason {
+  PAUSE_REASON_NONE = 0;
+  PAUSE_REASON_IDLE = 1;         // no key, click or mouse movement above 0.5 px for 10 s
+  PAUSE_REASON_UNFOCUSED = 2;    // window unfocused or minimized
+  PAUSE_REASON_SCREEN = 3;       // pause menu, chat, sign/book editing, options, death, loading, credits
+  PAUSE_REASON_GAME_MODE = 4;    // creative or spectator
+  PAUSE_REASON_STUCK_KEY = 5;    // one movement key held with zero mouse input for 30 s
+  PAUSE_REASON_AUTOMATION = 6;   // Baritone, hb-executor or other automation active
+  PAUSE_REASON_MANUAL = 7;       // F8
+  PAUSE_REASON_DISCONNECTED = 8;
+  PAUSE_REASON_TEXT_INPUT = 9;     // typing into a text field, until 1.5 s after the last keystroke
+  PAUSE_REASON_CAMERA_DETACHED = 10; // the view isn't the player's (freecam, camera on another entity)
+}
+
+message SegmentFlag {
+  enum Kind {
+    UNKNOWN = 0;
+    DEGRADED = 1;    // FPS under 20 for over 2 s, or a server position correction
+    SUSPECT_AFK = 2; // stuck key / weighted-key AFK farm
+  }
+  Kind kind = 1;
+  string reason = 2;
+}
+
+// F9 tombstone. Readers drop every record that comes before it in the session's stream and has
+// t_ns in [from_t_ns, to_t_ns]; records after it are kept. Written only when part of that span had
+// already left the recorder's 15 s holdback.
+message Discard {
+  uint64 from_t_ns = 1;
+  uint64 to_t_ns = 2;
+}
+
+// =================================================================================================
+// Session header (sessions/<uuid>/header.json, proto3 JSON mapping of this message)
+// =================================================================================================
+
+message ModInfo {
+  string id = 1;
+  string version = 2;
+}
+
+message KeyBinding {
+  string name = 1;     // KeyMapping name, e.g. "key.forward"
+  string key = 2;      // bound key, e.g. "key.keyboard.w"
+  string category = 3;
+}
+
+message SessionHeader {
+  uint32 schema = 1;
+  string session_id = 2;
+  Source source = 3;
+  int64 started_unix_ms = 4; // wall clock; used only to split train/test by play day
+  string game_version = 5;
+  string recorder_version = 6;
+  repeated ModInfo mods = 7;
+
+  // Settings snapshot
+  float fov = 8;
+  double mouse_sensitivity = 9;
+  bool raw_mouse_input = 10;
+  bool invert_y = 11;
+  int32 gui_scale = 12;
+  int32 render_distance = 13;
+  int32 fps_cap = 14;
+  bool toggle_sprint = 15;
+  bool toggle_crouch = 16;
+  bool auto_jump = 17;
+  repeated KeyBinding keybinds = 18;
+  repeated string key_order = 19; // KeyMapping names in Tick.keys_down bit order (at most 64)
+
+  string game_mode = 20;
+  string difficulty = 21;
+  string world_id_hash = 22; // salted per-install hash of the world name or server address
+  bool multiplayer = 23;
+
+  bool invert_x = 24;
+  bool toggle_attack = 25;
+  bool toggle_use = 26;
+  double mouse_wheel_sensitivity = 27;
+  bool discrete_mouse_scroll = 28;
+  string graphics_backend = 29; // "opengl" or "vulkan"
+}

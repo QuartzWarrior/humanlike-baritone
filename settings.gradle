@@ -1,0 +1,25 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+plugins {
+	// Lets Gradle download a JDK 25 toolchain on machines that don't have one installed.
+	id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'humanlike-baritone'
+
+include 'mod:common'      // proto bindings, record I/O, shared config and adapters (hb-common)
+include 'mod:recorder'    // hb-recorder Fabric mod
+include 'mod:executor'    // hb-executor Fabric mod
+include 'mod:integration' // dev-only: full stack (recorder + executor + Baritone fork) and client game tests
+
+// baritone-fork/ is NOT a subproject: it is cabaletta's own Gradle 8 + Unimined build.
+// The root build.gradle drives it through its wrapper (see buildBaritoneFork).

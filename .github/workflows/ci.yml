@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gradle:
+    name: Mods + Baritone fork
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Build and test
+        run: ./gradlew build --stacktrace
+
+      - name: Python bindings match hb.proto
+        run: |
+          ./gradlew :mod:common:syncPythonProto
+          git diff --exit-code -- pipeline/src/hbpipe/proto
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mods
+          path: |
+            mod/recorder/build/libs/hb-recorder-*.jar
+            mod/executor/build/libs/hb-executor-*.jar
+            build/baritone/runtime/baritone-fabric.jar
+
+  client-gametest:
+    name: Client game test (full stack in a 26.2 client)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v6
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run client game tests
+        run: xvfb-run -a ./gradlew :mod:integration:runClientGameTest --stacktrace
+
+      # Phase 1 gate: every record the recorder wrote in those tests decodes in Python exactly as
+      # Java wrote it, and nothing typed into a text field reached disk.
+      - uses: astral-sh/setup-uv@v10
+      - name: Java-to-Python round trip and privacy checks
+        working-directory: pipeline
+        run: |
+          uv sync --locked
+          uv run hbpipe verify ../mod/integration/build/run/clientGameTest/hb-data
+          uv run hbpipe inspect ../mod/integration/build/run/clientGameTest/hb-data
+          uv run hbpipe label ../mod/integration/build/run/clientGameTest/hb-data
+          uv run hbpipe report ../mod/integration/build/run/clientGameTest/hb-data
+
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-gametest-output
+          path: |
+            mod/integration/build/run/clientGameTest/screenshots
+            mod/integration/build/run/clientGameTest/hb-data/sessions
+            mod/integration/build/run/clientGameTest/logs/latest.log
+          if-no-files-found: ignore
+
+  python:
+    name: Python pipeline
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: pipeline
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest

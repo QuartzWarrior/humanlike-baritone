@@ -1,0 +1,83 @@
+plugins {
+	id 'net.fabricmc.fabric-loom'
+	id 'java-library'
+	id 'com.google.protobuf'
+}
+
+base {
+	archivesName = 'hb-common'
+}
+
+sourceSets {
+	main {
+		proto {
+			srcDir rootProject.file('proto')
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${loader_version}"
+	// The adapter in hb.common.mc wires Fabric API events for both mods.
+	implementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+
+	api "com.google.protobuf:protobuf-java:${protobuf_version}"
+	api "com.github.luben:zstd-jni:${zstd_jni_version}"
+	include "com.google.protobuf:protobuf-java:${protobuf_version}"
+	include "com.github.luben:zstd-jni:${zstd_jni_version}"
+	// JsonFormat for header.json. Its guava and gson dependencies come with Minecraft.
+	api("com.google.protobuf:protobuf-java-util:${protobuf_version}") { transitive = false }
+	include "com.google.protobuf:protobuf-java-util:${protobuf_version}"
+
+	// HbAutomation asks Baritone whether it is driving the player; only touched when the mod is loaded.
+	compileOnly project(path: ':', configuration: 'baritoneApi')
+
+	testImplementation platform("org.junit:junit-bom:${junit_version}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// One protoc generates both languages, so Java and Python can never disagree on the schema.
+protobuf {
+	protoc {
+		artifact = "com.google.protobuf:protoc:${protobuf_version}"
+	}
+	generateProtoTasks {
+		ofSourceSet('main').configureEach {
+			builtins {
+				python {}
+				pyi {}
+			}
+		}
+	}
+}
+
+def protoSource = rootProject.file('proto/hb/v1/hb.proto')
+def pythonProtoDir = rootProject.file('pipeline/src/hbpipe/proto')
+
+// The Python bindings are committed so the pipeline needs no JVM. The digest lets pytest detect
+// bindings that are stale relative to hb.proto.
+tasks.register('syncPythonProto', Copy) {
+	group = 'hb'
+	description = 'Copies the protoc-generated Python bindings into pipeline/src/hbpipe/proto.'
+	dependsOn 'generateProto'
+	from(layout.buildDirectory.dir('generated/sources/proto/main/python'))
+	from(layout.buildDirectory.dir('generated/sources/proto/main/pyi'))
+	into pythonProtoDir
+	def digestFile = new File(pythonProtoDir, 'hb_proto.sha256')
+	doLast {
+		def text = protoSource.getText('UTF-8').replace('\r\n', '\n')
+		def digest = java.security.MessageDigest.getInstance('SHA-256').digest(text.getBytes('UTF-8'))
+		digestFile.text = digest.encodeHex().toString() + '\n'
+	}
+}
+
+tasks.named('test', Test) {
+	def testdata = rootProject.file('proto/testdata')
+	systemProperty 'hb.testdata', testdata.absolutePath
+	// ./gradlew :mod:common:test -Phb.updateGolden=true rewrites the golden files after an
+	// intentional schema change.
+	systemProperty 'hb.updateGolden', providers.gradleProperty('hb.updateGolden').getOrElse('false')
+	inputs.dir(testdata).withPathSensitivity(PathSensitivity.RELATIVE)
+}

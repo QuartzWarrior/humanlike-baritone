@@ -1,0 +1,6 @@
+{
+  "key.category.hb-recorder.recorder": "Humanlike Baritone Recorder",
+  "key.hb-recorder.pause": "Pause / resume recording",
+  "key.hb-recorder.discard": "Discard the last 60 s",
+  "key.hb-recorder.status": "Recorder status and settings"
+}

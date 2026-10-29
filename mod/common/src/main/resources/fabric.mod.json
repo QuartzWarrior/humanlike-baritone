@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "hb-common",
+  "version": "${version}",
+  "name": "Humanlike Baritone Common",
+  "description": "Shared schema bindings, record I/O and Minecraft adapters for hb-recorder and hb-executor.",
+  "authors": ["QuartzWarrior"],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["hb.common.HbCommonClient"]
+  },
+  "mixins": ["hb-common.mixins.json"],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "minecraft": "~${minecraft_version}",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}

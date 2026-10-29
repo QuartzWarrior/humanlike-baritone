@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "hb-integration-test",
+  "version": "1.0.0",
+  "name": "Humanlike Baritone integration tests",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "hb.integration.QuietClient"
+    ],
+    "fabric-client-gametest": [
+      "hb.integration.HbStackClientGameTest",
+      "hb.integration.RecorderGateClientGameTest",
+      "hb.integration.RecorderCaptureCoverageClientGameTest",
+      "hb.integration.RecorderBenchmarkClientGameTest",
+      "hb.integration.BaselineRunsClientGameTest",
+      "hb.integration.HumanizedRunClientGameTest",
+      "hb.integration.LocalServerClientGameTest",
+      "hb.integration.Phase4GateClientGameTest",
+      "hb.integration.BuildClientGameTest"
+    ]
+  },
+  "depends": {
+    "hb-recorder": "*",
+    "hb-executor": "*",
+    "baritone": "*"
+  }
+}

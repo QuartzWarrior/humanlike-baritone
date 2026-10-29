@@ -1,0 +1,43 @@
+[project]
+name = "hbpipe"
+version = "0.1.0"
+description = "Offline pipeline for Humanlike Baritone: conversion, labeling, behavior models and the discriminator."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "lightgbm>=4.6",
+    "numpy>=2.2",
+    "polars>=1.30",
+    # Must match the protoc release line in gradle.properties (protobuf_version 4.36.2 -> 7.36.x).
+    "protobuf>=7.36.2,<7.37",
+    "pyarrow>=20",
+    "scikit-learn>=1.6",
+    "streamlit>=1.45",
+    "torch>=2.6",
+    "zstandard>=0.25",
+]
+
+[project.scripts]
+hbpipe = "hbpipe.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "ruff>=0.17",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = ["--strict-markers"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["src/hbpipe/proto/hb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]

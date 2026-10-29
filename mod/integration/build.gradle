@@ -1,0 +1,158 @@
+// Dev-only project: runs the whole stack (hb-recorder + hb-executor + the Baritone fork) in one
+// client and hosts the client game tests. Nothing here ships.
+//   ./gradlew :mod:integration:runClient            play with everything loaded
+//   ./gradlew :mod:integration:runClientGameTest    automated tests (Phase 0 and Phase 1 gates)
+//     -Phb.graphicsBackend=vulkan                   run them on the Vulkan renderer
+//     -Phb.benchMinutes=60 [-Phb.benchAb=true]      Phase 1 performance benchmark instead
+//       [-Phb.benchCrash=exit|halt]                 ...ending in a game crash or a hard kill
+//     -Phb.baselineMinutes=20                       Phase 3: plain Baritone tasks recorded as bot sessions
+//     -Phb.gateRuns=20 [-Phb.gateScale=small]       Phase 4 gate: the humanized executor on four tasks
+//       [-Phb.models=DIR]                           ...with the Stage 1 models in DIR (default build/hb-models)
+//       [-Phb.gateFirst=N]                          ...starting at run N's ground, to split the gate into chunks
+//       [-Phb.gateStrength=0]                       ...as plain Baritone (default 1, full humanization)
+//     -Phb.buildSchematic=PATH [-Phb.buildMinutes=120]  build a .litematic underground with the humanized executor (game minutes)
+//       [-Phb.buildRockLast=true]                   ...attempts in turn leaving holes in the rock open and filling them
+//       [-Phb.buildLeave=ladder,repeater]           ...the rest put in by the test: the bot places only these
+//       [-Phb.buildLayers=true]                     ...one layer at a time from the bottom (Baritone's buildInLayers)
+//       [-Phb.buildBelow=N]                         ...the layers under N put in by the test: the bot starts at layer N
+//   -Phb.userMods=DIR    with any run above: also load the optimization mods in DIR (a Prism
+//                        instance's mods folder), read where they are. Test clients play at volume 0.
+// The run directory is wiped on every run, so bot sessions from the baseline and gate runs are
+// copied to build/bot-sessions/<run> afterwards (with hb-gate.json or hb-build.json).
+plugins {
+	id 'net.fabricmc.fabric-loom'
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${fabric_api_version}"
+
+	implementation project(':mod:common')
+	implementation project(':mod:executor')
+	implementation project(':mod:recorder')
+	localRuntime project(path: ':', configuration: 'baritoneRuntime')
+}
+
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = 'hb-integration-test'
+		enableGameTests = false
+		enableClientGameTests = true
+		eula = true // accepts the Minecraft EULA for the test client's integrated server
+	}
+}
+
+def graphicsBackend = providers.gradleProperty('hb.graphicsBackend')
+def benchMinutes = providers.gradleProperty('hb.benchMinutes')
+def benchAb = providers.gradleProperty('hb.benchAb')
+def benchCrash = providers.gradleProperty('hb.benchCrash')
+def baselineMinutes = providers.gradleProperty('hb.baselineMinutes')
+def gateRuns = providers.gradleProperty('hb.gateRuns')
+def gateScale = providers.gradleProperty('hb.gateScale')
+def buildSchematic = providers.gradleProperty('hb.buildSchematic')
+// Performance mods only, by file name, and the libraries they need. Not Dynamic FPS: it throttles a
+// window without focus, and the test window never has it. Not C2ME: alpha chunk loading. Not
+// ModernFix: its dev-environment mixins (applied only outside a release) crash this client.
+def optimizationMods = ['sodium-', 'nvidium-', 'lithium-', 'ferritecore-', 'ImmediatelyFast-',
+	'entityculling-', 'moreculling-', 'cloth-config-', 'BadOptimizations-', 'debugify-', 'krypton-', 'vmp-',
+	'ScalableLux-', 'zfastnoise-', 'zconfig-', 'servercore-', 'Clumps-', 'bbe-']
+def userMods = providers.gradleProperty('hb.userMods')
+loom.runs.matching { it.name == 'clientGameTest' }.configureEach {
+	if (graphicsBackend.isPresent()) {
+		programArgs '--graphicsBackend', graphicsBackend.get()
+	}
+	if (userMods.isPresent()) {
+		def jars = (new File(userMods.get()).listFiles() ?: []).findAll { f ->
+			f.name.endsWith('.jar') && optimizationMods.any { f.name.startsWith(it) }
+		}.sort { it.name }
+		vmArg "-Dfabric.addMods=${jars*.absolutePath.join(File.pathSeparator)}"
+	}
+	def jfr = providers.gradleProperty('hb.jfr')
+	if (jfr.isPresent()) {
+		vmArg "-XX:StartFlightRecording=filename=${jfr.get()},settings=profile"
+	}
+	if (gateRuns.isPresent()) {
+		// Phase4GateClientGameTest: the functional tests skip.
+		vmArg "-Dhb.gate.runs=${gateRuns.get()}"
+		vmArg "-Dhb.gate.scale=${gateScale.getOrElse('full')}"
+		vmArg "-Dhb.gate.tasks=${providers.gradleProperty('hb.gateTasks').getOrElse('')}"
+		vmArg "-Dhb.gate.first=${providers.gradleProperty('hb.gateFirst').getOrElse('0')}"
+		vmArg "-Dhb.gate.strength=${providers.gradleProperty('hb.gateStrength').getOrElse('1')}"
+		vmArg "-Dhb.humanizer.trace=${providers.gradleProperty('hb.trace').getOrElse('false')}"
+		vmArg "-Dhb.humanizer.tickTrace=${providers.gradleProperty('hb.tickTrace').getOrElse('false')}"
+		vmArg "-Dhb.models.dir=${providers.gradleProperty('hb.models').getOrElse(rootProject.file('build/hb-models').absolutePath)}"
+	} else if (buildSchematic.isPresent()) {
+		// BuildClientGameTest; the functional tests skip.
+		vmArg "-Dhb.build.schematic=${buildSchematic.get()}"
+		vmArg "-Dhb.build.minutes=${providers.gradleProperty('hb.buildMinutes').getOrElse('120')}"
+		vmArg "-Dhb.build.strength=${providers.gradleProperty('hb.buildStrength').getOrElse('1')}"
+		vmArg "-Dhb.build.rockLast=${providers.gradleProperty('hb.buildRockLast').getOrElse('false')}"
+		vmArg "-Dhb.build.leave=${providers.gradleProperty('hb.buildLeave').getOrElse('')}"
+		vmArg "-Dhb.build.layers=${providers.gradleProperty('hb.buildLayers').getOrElse('false')}"
+		vmArg "-Dhb.build.below=${providers.gradleProperty('hb.buildBelow').getOrElse('0')}"
+		vmArg "-Dhb.build.attempts=${providers.gradleProperty('hb.buildAttempts').getOrElse('12')}"
+		vmArg "-Dhb.humanizer.trace=${providers.gradleProperty('hb.trace').getOrElse('false')}"
+		vmArg "-Dhb.models.dir=${providers.gradleProperty('hb.models').getOrElse(rootProject.file('build/hb-models').absolutePath)}"
+	} else if (baselineMinutes.isPresent()) {
+		// BaselineRunsClientGameTest: plain Baritone recorded as bot sessions; the functional tests skip.
+		vmArg "-Dhb.baseline.minutes=${baselineMinutes.get()}"
+	} else if (benchMinutes.isPresent()) {
+		// RecorderBenchmarkClientGameTest; the functional tests skip themselves.
+		vmArg "-Dhb.bench.minutes=${benchMinutes.get()}"
+		vmArg "-Dhb.bench.ab=${benchAb.getOrElse('false')}"
+		if (benchCrash.isPresent()) {
+			// Checks what survives a crash, so keep the mirror to compare against.
+			vmArg "-Dhb.bench.crash=${benchCrash.get()}"
+			vmArg '-Dhb.recorder.mirror=true'
+		}
+	} else {
+		// The recorder also writes every record as JSON, so hbpipe can check the Java-to-Python round trip.
+		vmArg '-Dhb.recorder.mirror=true'
+	}
+}
+
+// Keeps the bot sessions a baseline or gate run recorded (source = bot only; the test player's own
+// recorder sessions stay behind), and the gate's hb-gate.json, before the next run wipes the run
+// directory.
+tasks.matching { it.name == 'runClientGameTest' }.configureEach {
+	def sessions = file('build/run/clientGameTest/hb-data/sessions').toPath()
+	def gateReport = file('build/run/clientGameTest/hb-gate.json').toPath()
+	def buildReport = file('build/run/clientGameTest/hb-build.json').toPath()
+	def out = rootProject.file('build/bot-sessions').toPath()
+	def keep = gateRuns.isPresent() || baselineMinutes.isPresent() || buildSchematic.isPresent()
+	doLast { task ->
+		// Plain java.nio: the configuration cache allows no project calls (copy {}) at execution time.
+		if (!keep || !java.nio.file.Files.isDirectory(sessions)) {
+			return
+		}
+		def into = out.resolve(new Date().format('yyyyMMdd-HHmmss'))
+		def kept = 0
+		sessions.toFile().listFiles().each { dir ->
+			def stats = new File(dir, 'stats.json')
+			if (!stats.isFile() || !stats.text.contains('"SOURCE_BOT"')) {
+				return
+			}
+			def from = dir.toPath()
+			java.nio.file.Files.walk(from).withCloseable { paths ->
+				paths.each { src ->
+					def dst = into.resolve(dir.name).resolve(from.relativize(src).toString())
+					if (java.nio.file.Files.isDirectory(src)) {
+						java.nio.file.Files.createDirectories(dst)
+					} else {
+						java.nio.file.Files.copy(src, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+					}
+				}
+			}
+			kept++
+		}
+		[gateReport, buildReport].each { report ->
+			if (java.nio.file.Files.isRegularFile(report)) {
+				java.nio.file.Files.createDirectories(into)
+				java.nio.file.Files.copy(report, into.resolve(report.fileName.toString()), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+			}
+		}
+		task.logger.lifecycle("Kept ${kept} bot sessions in ${into}")
+	}
+}
